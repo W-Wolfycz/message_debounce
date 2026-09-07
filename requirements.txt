@@ -1,0 +1,1 @@
+# 仅依赖 AstrBot 运行时与 Python 标准库。

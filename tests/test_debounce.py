@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from debounce import DebounceTracker, MergeBuffer
+from debounce import (
+    DebounceTracker,
+    MergeBuffer,
+    format_log_prefix,
+    normalize_whitelist,
+    whitelist_target,
+)
 
 
 class FakeClock:
@@ -233,3 +239,31 @@ def test_buffer_counts_empty_text_entries(clock: FakeClock) -> None:
     assert buf.add("k", "") == 2  # 图片/语音等纯媒体消息
     assert buf.clear_if_last("k", ts_media)  # 媒体载体也能正常关串
     assert buf.peek("k") == []
+
+
+# ── 白名单辅助函数 ─────────────────────────────────────────────────
+
+def test_normalize_whitelist() -> None:
+    parsed, invalid = normalize_whitelist(
+        ["G:10001", " f:20002 ", "G:", "10001", None, ""]
+    )
+    assert parsed == {"G:10001", "F:20002"}
+    assert invalid == 2  # "G:" 与裸 ID "10001"
+    assert normalize_whitelist("not-a-list") == (set(), 0)
+    assert normalize_whitelist(None) == (set(), 0)
+    assert normalize_whitelist(()) == (set(), 0)
+
+
+def test_whitelist_target_uses_g_f_prefix() -> None:
+    assert whitelist_target(True, "group_demo", "10001") == "F:10001"
+    assert whitelist_target(False, "group_demo", "10001") == "G:group_demo"
+
+
+def test_format_log_prefix() -> None:
+    assert format_log_prefix("message_debounce") == "[message_debounce]"
+    assert format_log_prefix("message_debounce", "BOT1", False) == "[message_debounce]"
+    assert (
+        format_log_prefix("message_debounce", "BOT1", True)
+        == "[message_debounce][platform:BOT1]"
+    )
+    assert format_log_prefix("message_debounce", "", True) == "[message_debounce]"

@@ -1,8 +1,8 @@
 name: message_debounce
 display_name: 消息防抖
 short_desc: 按用户维度做时间防抖，窗口内新消息静默取消上一条待发送回复
-desc: 按用户维度（平台实例 + 会话 + 发送者）做纯时间防抖：同一用户在防抖窗口内再次发消息时，上一条消息的待发送回复会被静默取消，只回复窗口内最新一条；被取消的前文会合并进最终请求的 prompt（不改写事件原文，chat_memory 等插件的逐条审计归档不受影响），通过事件 extra `message_debounce_merge` 供插件链感知，并向 LLM 追加合并说明。已发送或已开始流式输出的回复不追回。配置窗口为 0 时插件关闭。
-version: 1.0.0
+desc: 按用户维度（平台实例 + 会话 + 发送者）做纯时间防抖：同一用户在防抖窗口内再次发消息时，上一条消息的待发送回复会被静默取消，只回复窗口内最新一条；被取消的前文会合并进最终请求的 prompt（不改写事件原文，chat_memory 等插件的逐条审计归档不受影响），通过事件 extra `message_debounce_merge` 供插件链感知，并向 LLM 追加合并说明。已发送或已开始流式输出的回复不追回。窗口为 0 或会话不在白名单时插件不生效。
+version: 1.0.1
 author: Wolfycz
 repo: https://github.com/W-Wolfycz/message_debounce
 astrbot_version: ">=4.16,<5"

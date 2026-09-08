@@ -146,3 +146,43 @@ class MergeBuffer:
         horizon = now - _ENTRY_TTL_SECONDS
         for key in [k for k, s in self._states.items() if s.last < horizon]:
             del self._states[key]
+
+
+def normalize_whitelist(raw: object) -> tuple[set[str], int]:
+    """解析白名单为归一化集合，条目格式 `G:<群号>` 或 `F:<用户号>`。
+
+    群号与用户号可能同号，必须带前缀区分（与 bubble_reply 的黑名单一致）。
+    返回 (合法项集合, 被忽略的非法项数量)。
+    """
+    if not isinstance(raw, (list, tuple, set)):
+        return set(), 0
+    result: set[str] = set()
+    invalid = 0
+    for item in raw:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        prefix, separator, identifier = text.partition(":")
+        prefix = prefix.strip().upper()
+        identifier = identifier.strip()
+        if separator and identifier and prefix in ("G", "F"):
+            result.add(f"{prefix}:{identifier}")
+        else:
+            invalid += 1
+    return result, invalid
+
+
+def whitelist_target(is_private: bool, group_id: str, sender_id: str) -> str:
+    """白名单匹配目标：私聊 `F:<用户号>`，群聊 `G:<群号>`。"""
+    return f"F:{sender_id}" if is_private else f"G:{group_id}"
+
+
+def format_log_prefix(
+    plugin_name: str, platform_id: str = "", with_bot_id: bool = False
+) -> str:
+    """日志前缀：`log_with_bot_id` 启用且拿到平台实例时附带 platform 标识。"""
+    if with_bot_id and platform_id:
+        return f"[{plugin_name}][platform:{platform_id}]"
+    return f"[{plugin_name}]"

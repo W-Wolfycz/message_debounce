@@ -8,8 +8,10 @@ from debounce import (
     DebounceTracker,
     MergeBuffer,
     format_log_prefix,
-    normalize_whitelist,
-    whitelist_target,
+    is_real_message,
+    is_command_event,
+    normalize_session_list,
+    session_target,
 )
 
 
@@ -243,20 +245,44 @@ def test_buffer_counts_empty_text_entries(clock: FakeClock) -> None:
 
 # ── 白名单辅助函数 ─────────────────────────────────────────────────
 
-def test_normalize_whitelist() -> None:
-    parsed, invalid = normalize_whitelist(
+def test_normalize_session_list() -> None:
+    parsed, invalid = normalize_session_list(
         ["G:10001", " f:20002 ", "G:", "10001", None, ""]
     )
     assert parsed == {"G:10001", "F:20002"}
     assert invalid == 2  # "G:" 与裸 ID "10001"
-    assert normalize_whitelist("not-a-list") == (set(), 0)
-    assert normalize_whitelist(None) == (set(), 0)
-    assert normalize_whitelist(()) == (set(), 0)
+    assert normalize_session_list("not-a-list") == (set(), 0)
+    assert normalize_session_list(None) == (set(), 0)
+    assert normalize_session_list(()) == (set(), 0)
 
 
-def test_whitelist_target_uses_g_f_prefix() -> None:
-    assert whitelist_target(True, "group_demo", "10001") == "F:10001"
-    assert whitelist_target(False, "group_demo", "10001") == "G:group_demo"
+def test_session_target_uses_g_f_prefix() -> None:
+    assert session_target(True, "group_demo", "10001") == "F:10001"
+    assert session_target(False, "group_demo", "10001") == "G:group_demo"
+
+
+class CommandFilter:
+    pass
+
+
+class _OtherFilter:
+    pass
+
+
+class _Handler:
+    def __init__(self, *filters) -> None:
+        self.event_filters = list(filters)
+
+
+def test_is_command_event() -> None:
+    assert is_command_event(None) is False
+    assert is_command_event([]) is False
+    assert is_command_event([_Handler(_OtherFilter())]) is False
+    # 类名兜底（本地无法导入真实 CommandFilter）
+    assert is_command_event([_Handler(_OtherFilter(), CommandFilter())]) is True
+    # 显式传入类型时按 isinstance 判定
+    assert is_command_event([_Handler(CommandFilter())], CommandFilter) is True
+    assert is_command_event([_Handler(_OtherFilter())], CommandFilter) is False
 
 
 def test_format_log_prefix() -> None:
@@ -267,3 +293,15 @@ def test_format_log_prefix() -> None:
         == "[message_debounce][platform:BOT1]"
     )
     assert format_log_prefix("message_debounce", "", True) == "[message_debounce]"
+
+
+def test_is_real_message() -> None:
+    assert is_real_message("message", True) is True
+    assert is_real_message("message", False) is False
+    # NapCat 的 input_status「正在输入」：post_type=notice 且消息链为空
+    assert is_real_message("notice", False) is False
+    assert is_real_message("notice", True) is False
+    assert is_real_message("request", False) is False
+    # 非 OneBot 平台（raw 无 post_type）只看消息链
+    assert is_real_message(None, True) is True
+    assert is_real_message(None, False) is False

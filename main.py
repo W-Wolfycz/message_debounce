@@ -18,7 +18,7 @@
 4. on_llm_response：生成期间被新消息取代时 stop_event 中止（非流式路径核心
    会跳过发送与历史保存）；未命中则回复注定会发出，此刻关闭该串缓冲。
 
-已发送或已开始流式输出的回复不追回。仅白名单内的群聊 / 私聊启用。
+已发送或已开始流式输出的回复不追回。黑名单内的群聊 / 私聊不启用。
 """
 
 from __future__ import annotations
@@ -35,14 +35,21 @@ from .debounce import (
     DebounceTracker,
     MergeBuffer,
     format_log_prefix,
-    normalize_whitelist,
-    whitelist_target,
+    is_command_event,
+    is_real_message,
+    normalize_session_list,
+    session_target,
 )
 
 try:  # 核心要求 extra_user_content_parts 为 ContentPart 实例，dict 会崩
     from astrbot.core.agent.message import TextPart
 except Exception:  # pragma: no cover - 兼容不同 AstrBot 版本
     TextPart = None  # type: ignore[assignment]
+
+try:  # 判定命令事件用；导入失败时 is_command_event 会按过滤器类名兜底
+    from astrbot.core.star.filter.command import CommandFilter
+except Exception:  # pragma: no cover - 兼容不同 AstrBot 版本
+    CommandFilter = None  # type: ignore[assignment]
 
 PLUGIN_NAME = "message_debounce"
 _TS_MARKER = f"_{PLUGIN_NAME}_arrive_ts"
@@ -73,8 +80,8 @@ class MsgDebouncePlugin(Star):
         self.window = window
         self.enabled = window > 0
         self.log_with_bot_id = bool(config.get("log_with_bot_id", False))
-        self.whitelist, invalid_whitelist = normalize_whitelist(
-            config.get("session_whitelist", [])
+        self.blacklist, invalid_blacklist = normalize_session_list(
+            config.get("session_blacklist", [])
         )
         self.tracker = DebounceTracker(window)
         self.buffer = MergeBuffer(window)
@@ -83,21 +90,33 @@ class MsgDebouncePlugin(Star):
         logger.info(
             f"{base_prefix} 已加载：window={self.window:g}s"
             f"（{'启用' if self.enabled else '关闭'}），"
-            f"白名单会话={len(self.whitelist)}"
+            f"黑名单会话={len(self.blacklist)}"
         )
         if TextPart is None:
             logger.warning(
                 f"{base_prefix} 无法导入 TextPart，合并说明将不注入（合并本身不受影响）"
             )
-        if invalid_whitelist:
+        if invalid_blacklist:
             logger.warning(
-                f"{base_prefix} 白名单有 {invalid_whitelist} 项格式无效已忽略"
+                f"{base_prefix} 黑名单有 {invalid_blacklist} 项格式无效已忽略"
                 "（应为 G:<群号> 或 F:<用户号>）"
             )
 
     def _log_prefix(self, event: AstrMessageEvent) -> str:
         platform = event.get_platform_id() or event.get_platform_name()
         return format_log_prefix(PLUGIN_NAME, platform, self.log_with_bot_id)
+
+    @staticmethod
+    def _raw_post_type(event: AstrMessageEvent) -> object | None:
+        """取 OneBot 系事件的 raw post_type；其他平台返回 None。"""
+        raw = getattr(event.message_obj, "raw_message", None)
+        getter = getattr(raw, "get", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter("post_type")
+        except Exception:
+            return None
 
     @staticmethod
     def _user_key(event: AstrMessageEvent) -> str:
@@ -111,14 +130,14 @@ class MsgDebouncePlugin(Star):
             f"{platform}:{kind}:{event.get_session_id()}:{event.get_sender_id()}"
         )
 
-    def _is_allowed(self, event: AstrMessageEvent) -> bool:
-        """白名单：仅启用配置的群聊（`G:<群号>`）或私聊（`F:<用户号>`）。"""
-        if not self.whitelist:
+    def _session_blocked(self, event: AstrMessageEvent) -> bool:
+        """黑名单：名单内的群聊（`G:<群号>`）或私聊（`F:<用户号>`）不启用。"""
+        if not self.blacklist:
             return False
-        target = whitelist_target(
+        target = session_target(
             event.is_private_chat(), event.get_group_id(), event.get_sender_id()
         )
-        return target in self.whitelist
+        return target in self.blacklist
 
     def _wake_event(self, key: str) -> asyncio.Event:
         evt = self._wake_events.get(key)
@@ -132,13 +151,19 @@ class MsgDebouncePlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=_PRIORITY)
     async def record_arrival(self, event: AstrMessageEvent) -> None:
-        """记录唤醒 bot 的消息到达时间（窗口内到达标记上一条待取消）并缓冲文本。
+        """记录默认会进入 LLM 的真实消息到达时间并缓冲文本。
 
-        未唤醒 bot 的消息、bot 自身消息（平台回显）都不参与防抖。
+        以下都不参与防抖：未唤醒 bot 的群聊消息、命令消息（由指令 Handler
+        直接回复、默认不走 LLM）、bot 自身回显、通知 / 请求类事件（如 NapCat
+        的「正在输入」）。
         """
-        if not self.enabled or not self._is_allowed(event):
+        if not self.enabled or self._session_blocked(event):
             return
         if not event.is_at_or_wake_command:
+            return
+        if not is_real_message(self._raw_post_type(event), bool(event.get_messages())):
+            return
+        if is_command_event(event.get_extra("activated_handlers"), CommandFilter):
             return
         if event.get_sender_id() == event.get_self_id():
             return
@@ -159,7 +184,7 @@ class MsgDebouncePlugin(Star):
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         """取消被取代的请求；带前文的载体等窗口静默后合并缓冲文本。"""
-        if not self.enabled or not self._is_allowed(event):
+        if not self.enabled or self._session_blocked(event):
             return
         timestamp = event.get_extra(_TS_MARKER)
         if timestamp is None:
@@ -230,7 +255,7 @@ class MsgDebouncePlugin(Star):
         链上耗时插件（CM/LM 查询等）运行期间新消息到达时，早检查已过，
         此处中止可在请求真正发出前省掉一次 LLM 调用。
         """
-        if not self.enabled or not self._is_allowed(event):
+        if not self.enabled or self._session_blocked(event):
             return
         timestamp = event.get_extra(_TS_MARKER)
         if timestamp is None:
@@ -251,7 +276,7 @@ class MsgDebouncePlugin(Star):
         未命中时回复注定会发出，此刻关闭该串缓冲，堵住「response → 发送」
         期间新消息重复合并已提交文本的竞态。
         """
-        if not self.enabled or not self._is_allowed(event):
+        if not self.enabled or self._session_blocked(event):
             return
         timestamp = event.get_extra(_TS_MARKER)
         if timestamp is None:

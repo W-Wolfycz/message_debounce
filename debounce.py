@@ -148,10 +148,10 @@ class MergeBuffer:
             del self._states[key]
 
 
-def normalize_whitelist(raw: object) -> tuple[set[str], int]:
-    """解析白名单为归一化集合，条目格式 `G:<群号>` 或 `F:<用户号>`。
+def normalize_session_list(raw: object) -> tuple[set[str], int]:
+    """解析会话名单为归一化集合，条目格式 `G:<群号>` 或 `F:<用户号>`。
 
-    群号与用户号可能同号，必须带前缀区分（与 bubble_reply 的黑名单一致）。
+    群号与用户号可能同号，必须带前缀区分（与 bubble_reply 的名单一致）。
     返回 (合法项集合, 被忽略的非法项数量)。
     """
     if not isinstance(raw, (list, tuple, set)):
@@ -174,8 +174,8 @@ def normalize_whitelist(raw: object) -> tuple[set[str], int]:
     return result, invalid
 
 
-def whitelist_target(is_private: bool, group_id: str, sender_id: str) -> str:
-    """白名单匹配目标：私聊 `F:<用户号>`，群聊 `G:<群号>`。"""
+def session_target(is_private: bool, group_id: str, sender_id: str) -> str:
+    """名单匹配目标：私聊 `F:<用户号>`，群聊 `G:<群号>`。"""
     return f"F:{sender_id}" if is_private else f"G:{group_id}"
 
 
@@ -186,3 +186,36 @@ def format_log_prefix(
     if with_bot_id and platform_id:
         return f"[{plugin_name}][platform:{platform_id}]"
     return f"[{plugin_name}]"
+
+
+def is_real_message(post_type: object, has_components: bool) -> bool:
+    """是否是需要参与防抖的真实消息事件。
+
+    OneBot 系适配器会把通知 / 请求类事件（如 NapCat 的 `input_status`
+    「正在输入」）也转成 AstrMessageEvent：`post_type` 不是 `message`、
+    消息链为空。这类事件不是用户发言，不能参与防抖。
+    """
+    if post_type is not None and post_type != "message":
+        return False
+    return bool(has_components)
+
+
+def is_command_event(
+    activated_handlers: object, command_filter_type: type | None = None
+) -> bool:
+    """该事件是否会被命令 Handler 处理。
+
+    命令由指令 Handler 直接回复、默认不会进入 LLM，因此不参与防抖。
+    `command_filter_type` 为 None 时按过滤器类名兜底判定。
+    """
+    if not isinstance(activated_handlers, (list, tuple)):
+        return False
+    for handler in activated_handlers:
+        for filter_obj in getattr(handler, "event_filters", ()) or ():
+            if command_filter_type is not None and isinstance(
+                filter_obj, command_filter_type
+            ):
+                return True
+            if filter_obj.__class__.__name__ == "CommandFilter":
+                return True
+    return False

@@ -1,5 +1,11 @@
 # 变更日志
 
+## 1.0.2 — 2026-09-08
+
+- **修复**：NapCat 等 OneBot 适配器会把通知类事件（`input_status`「正在输入」）转成私聊消息（`type=FRIEND_MESSAGE`、消息链为空、私聊无需唤醒），此前这些通知会给上一条真实消息打取消标记、导致待回复被静默取消；现在只处理真实消息事件（`post_type == message` 且消息链非空）。
+- **变更**：白名单改为黑名单 `session_whitelist` → `session_blacklist`（不做旧键兼容）：列表内的会话不启用防抖，留空 = 所有会话启用。
+- **变更**：只处理默认会进入 LLM 的消息——命令消息（指令 Handler 直接回复）不再参与防抖，避免命令误取消上一条待回复。
+
 ## 1.0.1 — 2026-09-08
 
 - **修复**：合并说明改用 `TextPart` 对象——`extra_user_content_parts` 必须是 ContentPart 实例，此前传 dict 会让核心组装请求时抛 `'dict' object has no attribute 'model_dump_for_context'`，合并请求直接失败、无任何回复。
